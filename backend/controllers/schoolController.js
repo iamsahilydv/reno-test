@@ -1,24 +1,17 @@
+const { v2: cloudinary } = require("cloudinary");
 const pool = require("../pool/pool");
-const path = require("path");
-const fs = require("fs");
 const multer = require("multer");
+const streamifier = require("streamifier"); // npm install streamifier
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    // Create the directory if it doesn't exist
-    const dir = "schoolImages";
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    cb(null, dir);
-  },
-  filename: function (req, file, cb) {
-    // Generate a unique filename with timestamp
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, "school-" + uniqueSuffix + path.extname(file.originalname));
-  },
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: "dlbzljjem",
+  api_key: "539116141828841",
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// Configure multer for memory storage (no local file saving)
+const storage = multer.memoryStorage();
 
 // File filter to allow only images
 const fileFilter = (req, file, cb) => {
@@ -50,61 +43,148 @@ const isValidContact = (contact) => {
   return contactRegex.test(contact);
 };
 
-// Helper function to delete image file
-const deleteImageFile = (filename) => {
-  if (filename) {
-    const filePath = path.join("schoolImages", filename);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-  }
+// Helper function to upload image to Cloudinary
+const uploadToCloudinary = (fileBuffer, filename) => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder: "school_images", // Organize images in a folder
+        public_id: `school_${Date.now()}_${Math.round(Math.random() * 1e9)}`,
+        resource_type: "image",
+        transformation: [
+          { width: 800, height: 600, crop: "limit" }, // Resize large images
+          { quality: "auto", fetch_format: "auto" }, // Optimize quality and format
+        ],
+      },
+      (error, result) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      }
+    );
+
+    streamifier.createReadStream(fileBuffer).pipe(uploadStream);
+  });
+};
+
+// Helper function to delete image from Cloudinary
+const deleteFromCloudinary = (publicId) => {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.destroy(publicId, (error, result) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
+      }
+    });
+  });
 };
 
 // Add a new school
 exports.addSchool = [
   upload.single("image"),
-  (req, res) => {
+  async (req, res) => {
     try {
-      const { name, address, city, state, contact, email_id } = req.body;
-      const image = req.file ? req.file.filename : null; // ✅ only filename
+      console.log("Request body:", req.body);
+      console.log("Request file:", req.file);
 
-      if (!name || !address || !city || !state || !contact || !email_id) {
-        deleteImageFile(image);
-        return res
-          .status(400)
-          .json({ error: "All fields except image are required." });
+      if (!req.body) {
+        return res.status(400).json({
+          error: "Request body is missing",
+          details: "Make sure you're sending multipart/form-data",
+        });
+      }
+
+      const { name, address, city, state, contact, email_id } = req.body;
+
+      // Validate required fields
+      const missingFields = [];
+      if (!name) missingFields.push("name");
+      if (!address) missingFields.push("address");
+      if (!city) missingFields.push("city");
+      if (!state) missingFields.push("state");
+      if (!contact) missingFields.push("contact");
+      if (!email_id) missingFields.push("email_id");
+
+      if (missingFields.length > 0) {
+        return res.status(400).json({
+          error: `Missing required fields: ${missingFields.join(", ")}`,
+          receivedFields: Object.keys(req.body),
+        });
       }
 
       if (!isValidEmail(email_id)) {
-        deleteImageFile(image);
-        return res.status(400).json({ error: "Invalid email." });
+        return res.status(400).json({ error: "Invalid email format" });
       }
 
       if (!isValidContact(contact)) {
-        deleteImageFile(image);
-        return res.status(400).json({ error: "Invalid contact number." });
+        return res.status(400).json({
+          error: "Invalid contact number. Must be at least 10 digits",
+        });
       }
 
+      let imageUrl = null;
+      let imagePublicId = null;
+
+      // Upload image to Cloudinary if provided
+      if (req.file) {
+        try {
+          const uploadResult = await uploadToCloudinary(
+            req.file.buffer,
+            req.file.originalname
+          );
+          imageUrl = uploadResult.secure_url;
+          imagePublicId = uploadResult.public_id;
+          console.log("Image uploaded to Cloudinary:", imageUrl);
+        } catch (uploadError) {
+          console.error("Cloudinary upload error:", uploadError);
+          return res.status(500).json({
+            error: "Image upload failed",
+            details: uploadError.message,
+          });
+        }
+      }
+
+      // Insert school data into database
       pool.query(
         "INSERT INTO schools (name, address, city, state, contact, image, email_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [name, address, city, state, contact, image, email_id],
+        [
+          name,
+          address,
+          city,
+          state,
+          contact,
+          imageUrl,
+          email_id,
+        ],
         (err, result) => {
           if (err) {
-            deleteImageFile(image);
-            return res
-              .status(500)
-              .json({ error: "Database insert error", details: err.message });
+            console.error("Database error:", err);
+            // If database insert fails and image was uploaded, delete it from Cloudinary
+            if (imagePublicId) {
+              deleteFromCloudinary(imagePublicId).catch(console.error);
+            }
+            return res.status(500).json({
+              error: "Database insert error",
+              details: err.message,
+            });
           }
           res.status(201).json({
             message: "School added successfully",
             id: result.insertId,
-            image: image ? `/schoolImages/${image}` : null,
+            image: imageUrl,
           });
         }
       );
     } catch (error) {
-      deleteImageFile(req.file?.filename);
-      res.status(500).json({ error: "Server error", details: error.message });
+      console.error("Server error:", error);
+      res.status(500).json({
+        error: "Server error",
+        details: error.message,
+        stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      });
     }
   },
 ];
@@ -119,11 +199,7 @@ exports.getSchools = (req, res) => {
           .status(500)
           .json({ error: "Database fetch error", details: err.message });
       }
-      const schools = results.map((school) => ({
-        ...school,
-        image: school.image ? `/schoolImages/${school.image}` : null,
-      }));
-      res.json(schools);
+      res.json(results);
     }
   );
 };
@@ -140,95 +216,133 @@ exports.getSchoolById = (req, res) => {
     if (results.length === 0) {
       return res.status(404).json({ error: "School not found" });
     }
-    const school = results[0];
-    school.image = school.image ? `/schoolImages/${school.image}` : null;
-    res.json(school);
+    res.json(results[0]);
   });
 };
 
 // Update a school by ID
 exports.updateSchool = [
   upload.single("image"),
-  (req, res) => {
+  async (req, res) => {
+    console.log("hie")
     try {
       const { id } = req.params;
-      const { name, address, city, state, contact, email_id } = req.body;
-      const newImage = req.file ? req.file.filename : null;
 
-      // First, get the current school data to handle image deletion if needed
+      if (!req.body) {
+        return res.status(400).json({
+          error: "Request body is missing",
+          details: "Make sure you're sending multipart/form-data",
+        });
+      }
+
+      const { name, address, city, state, contact, email_id } = req.body;
+
+      // First, get the current school data
       pool.query(
         "SELECT image FROM schools WHERE id = ?",
         [id],
-        (err, results) => {
+        async (err, results) => {
           if (err) {
-            deleteImageFile(newImage);
             return res
               .status(500)
               .json({ error: "Database fetch error", details: err.message });
           }
 
           if (results.length === 0) {
-            deleteImageFile(newImage);
             return res.status(404).json({ error: "School not found" });
           }
 
-          const oldImage = results[0].image;
+          const currentSchool = results[0];
+          const oldImagePublicId = currentSchool.image;
 
           // Validation
           if (!name || !address || !city || !state || !contact || !email_id) {
-            deleteImageFile(newImage);
             return res.status(400).json({ error: "All fields are required." });
           }
 
           if (!isValidEmail(email_id)) {
-            deleteImageFile(newImage);
             return res
               .status(400)
               .json({ error: "Please provide a valid email address." });
           }
 
           if (!isValidContact(contact)) {
-            deleteImageFile(newImage);
             return res.status(400).json({
               error:
                 "Please provide a valid contact number (at least 10 digits).",
             });
           }
 
-          let sql =
-            "UPDATE schools SET name=?, address=?, city=?, state=?, contact=?, email_id=?";
-          const params = [name, address, city, state, contact, email_id];
+          let imageUrl = currentSchool.image;
+          let imagePublicId = currentSchool.image;
 
-          if (newImage) {
-            sql += ", image=?";
-            params.push(newImage);
+          // Upload new image to Cloudinary if provided
+          if (req.file) {
+            try {
+              const uploadResult = await uploadToCloudinary(
+                req.file.buffer,
+                req.file.originalname
+              );
+              imageUrl = uploadResult.secure_url;
+              imagePublicId = uploadResult.public_id;
+              console.log("New image uploaded to Cloudinary:", imageUrl);
+            } catch (uploadError) {
+              console.error("Cloudinary upload error:", uploadError);
+              return res.status(500).json({
+                error: "Image upload failed",
+                details: uploadError.message,
+              });
+            }
           }
 
-          sql += " WHERE id=?";
-          params.push(id);
+          // Update school data in database
+          pool.query(
+            "UPDATE schools SET name=?, address=?, city=?, state=?, contact=?, email_id=?, image=?, image=? WHERE id=?",
+            [
+              name,
+              address,
+              city,
+              state,
+              contact,
+              email_id,
+              imageUrl,
+              imagePublicId,
+              id,
+            ],
+            async (err, result) => {
+              if (err) {
+                // If database update fails and new image was uploaded, delete it
+                if (req.file && imagePublicId !== oldImagePublicId) {
+                  await deleteFromCloudinary(imagePublicId).catch(
+                    console.error
+                  );
+                }
+                return res.status(500).json({
+                  error: "Database update error",
+                  details: err.message,
+                });
+              }
 
-          pool.query(sql, params, (err, result) => {
-            if (err) {
-              deleteImageFile(newImage);
-              return res
-                .status(500)
-                .json({ error: "Database update error", details: err.message });
+              // Delete old image from Cloudinary if a new image was uploaded
+              if (
+                req.file &&
+                oldImagePublicId &&
+                oldImagePublicId !== imagePublicId
+              ) {
+                await deleteFromCloudinary(oldImagePublicId).catch(
+                  console.error
+                );
+              }
+
+              res.json({
+                message: "School updated successfully",
+                image: imageUrl,
+              });
             }
-
-            // Delete old image if a new image was uploaded
-            if (newImage && oldImage) {
-              deleteImageFile(oldImage);
-            }
-
-            res.json({
-              message: "School updated successfully",
-              image: newImage ? `/schoolImages/${newImage}` : null,
-            });
-          });
+          );
         }
       );
     } catch (error) {
-      deleteImageFile(req.file?.filename);
       res.status(500).json({ error: "Server error", details: error.message });
     }
   },
@@ -239,33 +353,47 @@ exports.deleteSchool = (req, res) => {
   const { id } = req.params;
 
   // First, get the school data to delete the associated image
-  pool.query("SELECT image FROM schools WHERE id = ?", [id], (err, results) => {
-    if (err) {
-      return res
-        .status(500)
-        .json({ error: "Database fetch error", details: err.message });
-    }
-
-    if (results.length === 0) {
-      return res.status(404).json({ error: "School not found" });
-    }
-
-    const image = results[0].image;
-
-    // Delete the school record
-    pool.query("DELETE FROM schools WHERE id = ?", [id], (err, result) => {
+  pool.query(
+    "SELECT image FROM schools WHERE id = ?",
+    [id],
+    async (err, results) => {
       if (err) {
         return res
           .status(500)
-          .json({ error: "Database delete error", details: err.message });
+          .json({ error: "Database fetch error", details: err.message });
       }
 
-      // Delete the associated image file
-      if (image) {
-        deleteImageFile(image);
+      if (results.length === 0) {
+        return res.status(404).json({ error: "School not found" });
       }
 
-      res.json({ message: "School deleted successfully" });
-    });
-  });
+      const imagePublicId = results[0].image;
+
+      // Delete the school record
+      pool.query(
+        "DELETE FROM schools WHERE id = ?",
+        [id],
+        async (err, result) => {
+          if (err) {
+            return res
+              .status(500)
+              .json({ error: "Database delete error", details: err.message });
+          }
+
+          // Delete the associated image from Cloudinary
+          if (imagePublicId) {
+            try {
+              await deleteFromCloudinary(imagePublicId);
+              console.log("Image deleted from Cloudinary:", imagePublicId);
+            } catch (deleteError) {
+              console.error("Cloudinary delete error:", deleteError);
+              // Don't fail the request if image deletion fails
+            }
+          }
+
+          res.json({ message: "School deleted successfully" });
+        }
+      );
+    }
+  );
 };

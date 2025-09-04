@@ -22,13 +22,22 @@ pool.getConnection((err, connection) => {
   connection.release();
 });
 
-app.use(express.json());
+// IMPORTANT: Order matters here
 app.use(cors());
 
-// Use school routes
+// DO NOT use express.json() or express.urlencoded() before multer routes
+// as they will consume the request body before multer can process it
+
+// Serve static files
+app.use("/schoolImages", express.static(path.join(__dirname, "schoolImages")));
+
+// Use school routes BEFORE other body parsing middleware
 const schoolRoutes = require("./routes/schoolRoutes");
 app.use("/api/schools", schoolRoutes);
-app.use("/schoolImages", express.static(path.join(__dirname, "schoolImages")));
+
+// Only add these AFTER the multer routes if you need them for other routes
+// app.use(express.json());
+// app.use(express.urlencoded({ extended: true }));
 
 // Sample route
 app.get("/", (req, res) => {
