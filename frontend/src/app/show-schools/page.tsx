@@ -2,6 +2,7 @@
 import axios from "@/utils/axiosInstance";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 
 interface School {
   id: number;
@@ -180,7 +181,7 @@ export default function ShowSchools() {
               <p className="text-gray-600 dark:text-gray-400 text-lg">
                 {filteredSchools.length} school
                 {filteredSchools.length !== 1 ? "s" : ""} found
-                {searchTerm && ` for "${searchTerm}"`}
+                {searchTerm && <> for &quot;{searchTerm}&quot;</>}
               </p>
             </div>
           )}
@@ -258,10 +259,13 @@ export default function ShowSchools() {
                       <div className="relative h-56 overflow-hidden">
                         <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent z-10"></div>
                         {school.image ? (
-                          <img
+                          <Image
                             src={school.image}
                             alt={school.name}
+                            width={600}
+                            height={400}
                             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                            unoptimized
                           />
                         ) : (
                           <div className="w-full h-full bg-gradient-to-br from-blue-100 via-indigo-100 to-purple-100 dark:from-gray-700 dark:to-gray-600 flex items-center justify-center">
@@ -420,7 +424,7 @@ export default function ShowSchools() {
                   <div className="h-72 w-full overflow-hidden relative">
                     <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent z-10"></div>
                     {selectedSchool.image ? (
-                      <img
+                      <Image
                         src={selectedSchool.image}
                         alt={selectedSchool.name}
                         className="w-full h-full object-cover"

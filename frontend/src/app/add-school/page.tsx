@@ -3,6 +3,17 @@ import { useForm } from "react-hook-form";
 import axios from "@/utils/axiosInstance";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
+
+type SchoolFormData = {
+  name: string;
+  city: string;
+  address: string;
+  state: string;
+  contact: string;
+  email_id: string;
+  image?: File | null;
+};
 
 export default function AddSchool() {
   const router = useRouter();
@@ -12,7 +23,7 @@ export default function AddSchool() {
     formState: { errors },
     reset,
     setValue,
-  } = useForm();
+  } = useForm<SchoolFormData>();
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -29,11 +40,11 @@ export default function AddSchool() {
       setValue("image", file);
     } else {
       setImagePreview(null);
-      setValue("image", null as any);
+      setValue("image", null);
     }
   };
 
-  const onSubmit = async (data: any) => {
+  const onSubmit = async (data: SchoolFormData) => {
     setLoading(true);
     setMessage("");
 
@@ -54,7 +65,7 @@ export default function AddSchool() {
       }
 
       console.log("Sending FormData with fields:");
-      for (let [key, value] of formData.entries()) {
+      for (const [key, value] of formData.entries()) {
         if (value instanceof File) {
           console.log(`${key}: File(${value.name}, ${value.size} bytes)`);
         } else {
@@ -511,9 +522,11 @@ export default function AddSchool() {
                   >
                     {imagePreview ? (
                       <div className="relative group">
-                        <img
+                        <Image
                           src={imagePreview}
                           alt="School preview"
+                          width={600}
+                          height={200}
                           className="w-full h-48 object-cover"
                         />
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center">
