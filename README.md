@@ -10,7 +10,7 @@ DB_PASSWORD=
 DB_NAME=
 DB_PORT=
 PORT=8080
-CLOUDINARY_API_SECRET=2mpimdHVoIguuwGG8ofJpghSK0Q
+CLOUDINARY_API_SECRET=
 
 # start server 
 npm start (server start on port 8080)
